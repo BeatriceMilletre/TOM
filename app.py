@@ -7,13 +7,13 @@ import ssl
 from datetime import datetime
 
 # =========================================
-# CONFIG EMAIL VIA SECRETS STREAMLIT
+# CONFIG EMAIL VIA SECRETS STREAMLIT (SÉCURISÉ)
 # =========================================
 
-EMAIL_SENDER = st.secrets["EMAIL_SENDER"]
-EMAIL_APP_PASSWORD = st.secrets["EMAIL_APP_PASSWORD"]
-PRACTITIONER_EMAIL = st.secrets["PRACTITIONER_EMAIL"]
-
+# .get() pour éviter que l'app plante si les secrets n'existent pas
+EMAIL_SENDER = st.secrets.get("EMAIL_SENDER", None)
+EMAIL_APP_PASSWORD = st.secrets.get("EMAIL_APP_PASSWORD", None)
+PRACTITIONER_EMAIL = st.secrets.get("PRACTITIONER_EMAIL", None)
 
 # =========================================
 # FICHIERS DE DONNÉES
@@ -40,8 +40,7 @@ def save_data(data):
 
 
 # =========================================
-# QUESTIONS (sans catégories visibles)
-# Les domaines sont internes, invisibles au patient
+# QUESTIONS (domains = internes, invisibles au patient)
 # =========================================
 
 QUESTIONS = [
@@ -91,11 +90,9 @@ QUESTIONS = [
     (39, "Je sais refuser quelque chose sans culpabiliser.", "Autonomie"),
 ]
 
+DOMAINS = sorted(list(set(dom for _, _, dom in QUESTIONS)))
 
-# =========================================
-# ToM mapping
-# =========================================
-
+# Mapping questions → niveau de ToM
 TOM_LEVEL = {
     1:0, 2:1, 3:4, 4:3, 5:1, 6:2, 7:3,
     8:1, 9:1, 10:1, 11:2, 12:2, 13:2, 14:3, 15:4,
@@ -111,56 +108,68 @@ TOM_LEVEL = {
 # =========================================
 
 def compute_scores(responses):
-    domain_scores = {}
-    domain_max = {}
+    # scores par domaine
+    domain_scores = {dom: 0 for dom in DOMAINS}
+    domain_max = {dom: 0 for dom in DOMAINS}
 
     for qid, answer in responses.items():
-        _, _, dom = next(q for q in QUESTIONS if q[0] == qid)
-        domain_scores.setdefault(dom, 0)
+        # retrouver domaine
+        try:
+            _, _, dom = next(q for q in QUESTIONS if q[0] == qid)
+        except StopIteration:
+            continue
         domain_scores[dom] += answer
-        domain_max.setdefault(dom, 0)
         domain_max[dom] += 3
 
     total = sum(responses.values())
     total_max = len(QUESTIONS) * 3
 
     # ToM
-    tom_scores = {i:0 for i in range(6)}
-    tom_max = {i:0 for i in range(6)}
+    tom_scores = {i: 0 for i in range(6)}
+    tom_max = {i: 0 for i in range(6)}
 
     for qid, val in responses.items():
-        lvl = TOM_LEVEL.get(qid)
+        lvl = TOM_LEVEL.get(qid, None)
+        if lvl is None:
+            continue
         tom_scores[lvl] += val
         tom_max[lvl] += 3
 
     tom_global = 0
     for lvl in range(6):
-        if tom_max[lvl] > 0 and tom_scores[lvl] / tom_max[lvl] >= 0.6:
+        if tom_max[lvl] > 0 and (tom_scores[lvl] / tom_max[lvl]) >= 0.6:
             tom_global = lvl
 
     return domain_scores, domain_max, total, total_max, tom_global
 
 
 # =========================================
-# EMAIL
+# EMAIL (robuste : n’envoie rien si secrets manquants)
 # =========================================
 
 def send_email(code, domain_scores, domain_max, total, total_max, tom_level):
+    if not (EMAIL_SENDER and EMAIL_APP_PASSWORD and PRACTITIONER_EMAIL):
+        st.warning(
+            "Email non envoyé : configuration email incomplète dans les secrets Streamlit "
+            "(EMAIL_SENDER, EMAIL_APP_PASSWORD, PRACTITIONER_EMAIL)."
+        )
+        return
+
     subject = f"[Compétences sociales] Nouveau résultat - Code {code}"
 
     lines = [
         f"Code : {code}",
-        f"Date : {datetime.now()}",
+        f"Date : {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "",
         "Scores par domaine :",
     ]
 
-    for dom in domain_scores:
+    for dom in DOMAINS:
         lines.append(f"- {dom} : {domain_scores[dom]} / {domain_max[dom]}")
 
     lines.append("")
     lines.append(f"Score total : {total} / {total_max}")
-    lines.append(f"Niveau de ToM estimé : {tom_level}")
+    lines.append(f"Niveau de ToM estimé : {tom_level} (0 = pré-ToM, 5 = avancé)")
 
     body = "\n".join(lines)
     msg = f"Subject: {subject}\nFrom: {EMAIL_SENDER}\nTo: {PRACTITIONER_EMAIL}\n\n{body}"
@@ -170,6 +179,7 @@ def send_email(code, domain_scores, domain_max, total, total_max, tom_level):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx) as server:
             server.login(EMAIL_SENDER, EMAIL_APP_PASSWORD)
             server.sendmail(EMAIL_SENDER, PRACTITIONER_EMAIL, msg.encode("utf-8"))
+        st.success("Email envoyé au praticien.")
     except Exception as e:
         st.error(f"Erreur lors de l'envoi de l'email : {e}")
 
@@ -178,20 +188,21 @@ def send_email(code, domain_scores, domain_max, total, total_max, tom_level):
 # UI STREAMLIT
 # =========================================
 
-st.title("🧠 Questionnaire de compétences sociales")
-st.caption("Passation anonyme — 39 questions")
+st.set_page_config(page_title="Compétences sociales", page_icon="🧠", layout="centered")
 
-mode = st.sidebar.radio("Mode :", ["Passer le questionnaire", "Accès praticien"])
+st.title("🧠 Questionnaire de compétences sociales")
+st.caption("Passation anonyme — 39 affirmations")
+
+mode = st.sidebar.radio("Mode", ["Passer le questionnaire", "Accès praticien"])
 
 
 # =========================================
-# MODE PATIENT : PASSATION
+# MODE PATIENT
 # =========================================
 
 if mode == "Passer le questionnaire":
-
-    st.write("Réponds à chaque affirmation en choisissant ce qui te correspond le mieux :")
-    st.write("0 = jamais · 1 = parfois · 2 = souvent · 3 = toujours")
+    st.write("Pour chaque phrase, choisis ce qui te correspond le mieux :")
+    st.write("**0 = jamais · 1 = parfois · 2 = souvent · 3 = toujours**")
     st.write("---")
 
     responses = {}
@@ -199,20 +210,22 @@ if mode == "Passer le questionnaire":
     for qid, label, _ in QUESTIONS:
         responses[qid] = st.radio(
             f"{qid}. {label}",
-            [0,1,2,3],
+            [0, 1, 2, 3],
             horizontal=True,
             key=f"q_{qid}",
-            index=1  # valeur par défaut = "parfois"
+            index=1,  # valeur par défaut = "parfois"
         )
 
     if st.button("Envoyer le questionnaire", type="primary"):
-
         # scores
         dom_scores, dom_max, total, total_max, tom = compute_scores(responses)
 
         # code
         data = load_data()
         code = "CS-" + secrets.token_hex(3).upper()
+        while code in data:
+            code = "CS-" + secrets.token_hex(3).upper()
+
         data[code] = {
             "responses": responses,
             "domain_scores": dom_scores,
@@ -220,45 +233,45 @@ if mode == "Passer le questionnaire":
             "total": total,
             "total_max": total_max,
             "tom_level": tom,
-            "timestamp": str(datetime.now()),
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
         }
         save_data(data)
 
-        # envoi email
+        # envoi email au praticien (si configuré)
         send_email(code, dom_scores, dom_max, total, total_max, tom)
 
         st.success("Merci, ton questionnaire a été enregistré.")
-        st.info("Un code anonyme a été envoyé au praticien.")
+        st.info("Un code anonyme a été transmis au praticien.")
+
 
 # =========================================
 # MODE PRATICIEN
 # =========================================
 
 elif mode == "Accès praticien":
-
+    st.subheader("Accès praticien")
     code = st.text_input("Code de résultat :")
 
     if st.button("Afficher les résultats"):
-
         data = load_data()
-        if code in data:
+        code_stripped = code.strip()
+        if code_stripped in data:
+            result = data[code_stripped]
+            st.success(f"Résultats pour le code : {code_stripped}")
 
-            result = data[code]
-            st.success(f"Résultats pour : {code}")
+            st.write(f"**Date :** {result['timestamp']}")
+            st.write(f"**Score total :** {result['total']} / {result['total_max']}")
+            st.write(f"**Niveau de ToM estimé :** {result['tom_level']} (0 = pré-ToM, 5 = avancé)")
 
-            st.write(f"Date : {result['timestamp']}")
-            st.write(f"Score total : {result['total']} / {result['total_max']}")
-            st.write(f"Niveau de ToM estimé : {result['tom_level']}")
+            st.markdown("---")
+            st.markdown("### Scores par domaine")
+            for dom in DOMAINS:
+                st.write(f"- {dom} : **{result['domain_scores'][dom]} / {result['domain_max'][dom]}**")
 
-            st.write("---")
-            st.write("### Scores par domaine")
-            for d in result["domain_scores"]:
-                st.write(f"- {d} : {result['domain_scores'][d]} / {result['domain_max'][d]}")
-
-            st.write("---")
-            st.write("### Réponses détaillées")
+            st.markdown("---")
+            st.markdown("### Réponses détaillées")
             for qid, label, dom in QUESTIONS:
-                st.write(f"{qid}. {label} → {result['responses'][qid]}/3  ({dom})")
-
+                val = result["responses"].get(qid, 0)
+                st.write(f"{qid}. {label} → {val} / 3  ({dom})")
         else:
-            st.error("Code introuvable.")
+            st.error("Code introuvable. Vérifiez l’orthographe.")
