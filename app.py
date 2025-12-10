@@ -18,7 +18,7 @@ EMAIL_SENDER = email_conf.get("username")
 EMAIL_APP_PASSWORD = email_conf.get("password")
 USE_TLS = email_conf.get("use_tls", True)
 
-# tu peux mettre un autre destinataire si besoin
+# destinataire = toi, ou change ici si besoin
 PRACTITIONER_EMAIL = EMAIL_SENDER
 
 # ==============================
@@ -185,7 +185,7 @@ ITEMS = [
      "help": "Exemple : message amical vs professionnel."},
     {"id": 39, "domain": "Autonomie sociale",
      "label": "Je sais refuser quelque chose sans culpabiliser.",
-     "help": "Exemple : « Non, je ne peux pas, presque, mais merci. »"},
+     "help": "Exemple : « Non, je ne peux pas, mais merci. »"},
 ]
 
 
@@ -194,54 +194,75 @@ ITEMS = [
 # ==============================
 
 ITEM_TOM_LEVEL = {
-    1:0,2:1,3:4,4:3,5:1,6:2,7:3,
-    8:1,9:1,10:1,11:2,12:2,13:2,14:3,15:4,
-    16:0,17:0,18:2,19:2,20:3,21:3,
-    22:1,23:1,24:2,25:3,26:3,
-    27:3,28:4,29:4,30:2,31:1,32:4,33:3,
-    34:1,35:2,36:2,37:3,38:3,39:4
+    1: 0, 2: 1, 3: 4, 4: 3, 5: 1, 6: 2, 7: 3,
+    8: 1, 9: 1, 10: 1, 11: 2, 12: 2, 13: 2, 14: 3, 15: 4,
+    16: 0, 17: 0, 18: 2, 19: 2, 20: 3, 21: 3,
+    22: 1, 23: 1, 24: 2, 25: 3, 26: 3,
+    27: 3, 28: 4, 29: 4, 30: 2, 31: 1, 32: 4, 33: 3,
+    34: 1, 35: 2, 36: 2, 37: 3, 38: 3, 39: 4,
 }
 
 
 def compute_scores(responses):
-    """Calcule les sous-scores + total + ToM."""
+    """
+    Calcule les sous-scores, le total et un niveau de ToM.
+    Compatibilité clés int/str + ToM = niveau avec le meilleur ratio (0–5).
+    """
+    # normalisation des clés (JSON les stocke en str)
+    norm_responses = {}
+    for k, v in responses.items():
+        try:
+            qid = int(k)
+        except (TypeError, ValueError):
+            continue
+        norm_responses[qid] = v
+
+    # scores par domaine
     domain_scores = {d: 0 for d in DOMAINS}
     domain_max = {
-        "Compréhension sociale": 21,
-        "Communication sociale": 24,
-        "Régulation émotionnelle": 18,
-        "Flexibilité sociale": 15,
-        "Compétences spécifiques": 21,
-        "Autonomie sociale": 18,
+        "Compréhension sociale": 7 * 3,
+        "Communication sociale": 8 * 3,
+        "Régulation émotionnelle": 6 * 3,
+        "Flexibilité sociale": 5 * 3,
+        "Compétences spécifiques": 7 * 3,
+        "Autonomie sociale": 6 * 3,
     }
 
-    total_score = sum(responses.values())
+    total_score = 0
+    for item in ITEMS:
+        qid = item["id"]
+        val = norm_responses.get(qid, 0)
+        domain_scores[item["domain"]] += val
+        total_score += val
+
     total_max = len(ITEMS) * 3
 
-    # domaine
-    for item in ITEMS:
-        domain_scores[item["domain"]] += responses.get(item["id"], 0)
+    # scores ToM par niveau
+    tom_scores = {level: 0 for level in range(0, 6)}
+    tom_max = {level: 0 for level in range(0, 6)}
 
-    # ToM
-    tom_scores = {lvl: 0 for lvl in range(6)}
-    tom_max = {lvl: 0 for lvl in range(6)}
+    for qid, val in norm_responses.items():
+        level = ITEM_TOM_LEVEL.get(qid)
+        if level is not None:
+            tom_scores[level] += val
+            tom_max[level] += 3
 
-    for qid, val in responses.items():
-        lvl = ITEM_TOM_LEVEL.get(qid)
-        if lvl is not None:
-            tom_scores[lvl] += val
-            tom_max[lvl] += 3
-
+    # choix du niveau avec le meilleur ratio (0–5)
     tom_level = 0
-    for lvl in range(6):
-        if tom_max[lvl] > 0 and tom_scores[lvl]/tom_max[lvl] >= 0.6:
-            tom_level = lvl
+    best_ratio = -1.0
+    for level in range(0, 6):
+        if tom_max[level] == 0:
+            continue
+        ratio = tom_scores[level] / tom_max[level]
+        if ratio > best_ratio:
+            best_ratio = ratio
+            tom_level = level
 
     return domain_scores, domain_max, total_score, total_max, tom_level
 
 
 # ==============================
-# SEND EMAIL (version TLS 587)
+# SEND EMAIL (TLS 587)
 # ==============================
 
 def send_email(code, age_group, domain_scores, domain_max, total_score, total_max, tom_level):
@@ -259,7 +280,7 @@ def send_email(code, age_group, domain_scores, domain_max, total_score, total_ma
     lines += [
         "",
         f"Score total : {total_score} / {total_max}",
-        f"Niveau de théorie de l'esprit : {tom_level}",
+        f"Niveau de théorie de l'esprit (0–5) : {tom_level}",
         "",
         "Consultez l'app en mode praticien avec ce code."
     ]
@@ -304,7 +325,7 @@ if mode == "Passer le questionnaire":
 
     responses = {}
 
-    # *** NO CATEGORIES IN PASSATION ***
+    # Affichage sans catégories
     for item in ITEMS:
         responses[item["id"]] = st.radio(
             f"{item['id']}. {item['label']}",
@@ -369,11 +390,14 @@ else:
             st.subheader("Score total")
             st.write(f"{result['total_score']} / {result['total_max']}")
 
-            st.subheader("Niveau de théorie de l'esprit")
+            st.subheader("Niveau de théorie de l'esprit (0–5)")
             st.write(result["tom_level"])
 
             st.subheader("Détail des réponses")
             for item in ITEMS:
-                st.write(f"{item['id']}. {item['label']} → {result['responses'][item['id']]}")
+                qid = item["id"]
+                # compatibilité str / int pour les anciennes données
+                val = result["responses"].get(str(qid), result["responses"].get(qid, 0))
+                st.write(f"{qid}. {item['label']} → {val}/3")
         else:
             st.error("Code introuvable.")
