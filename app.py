@@ -7,12 +7,19 @@ import ssl
 from datetime import datetime
 
 # ==============================
-# CONFIGURATION EMAIL
+# CONFIGURATION EMAIL via st.secrets["email"]
 # ==============================
 
-EMAIL_SENDER = "beatricemilletre@gmail.com"          # expéditeur (Gmail)
-EMAIL_APP_PASSWORD = "TON_MOT_DE_PASSE_APP_ICI"      # mot de passe d’application
-PRACTITIONER_EMAIL = "beatricemilletre@gmail.com"    # destinataire (praticien)
+email_conf = st.secrets["email"]
+
+EMAIL_HOST = email_conf.get("host", "smtp.gmail.com")
+EMAIL_PORT = email_conf.get("port", 587)
+EMAIL_SENDER = email_conf.get("username")
+EMAIL_APP_PASSWORD = email_conf.get("password")
+USE_TLS = email_conf.get("use_tls", True)
+
+# tu peux mettre un autre destinataire si besoin
+PRACTITIONER_EMAIL = EMAIL_SENDER
 
 # ==============================
 # CHEMIN DE STOCKAGE DES DONNÉES
@@ -20,7 +27,6 @@ PRACTITIONER_EMAIL = "beatricemilletre@gmail.com"    # destinataire (praticien)
 
 DATA_DIR = "data"
 DATA_FILE = os.path.join(DATA_DIR, "social_comp_ado_adulte.json")
-
 os.makedirs(DATA_DIR, exist_ok=True)
 
 
@@ -53,7 +59,6 @@ DOMAINS = [
 ]
 
 ITEMS = [
-    # 1. Compréhension sociale (1–7)
     {"id": 1, "domain": "Compréhension sociale",
      "label": "Je comprends facilement l’émotion de quelqu’un (colère, tristesse, gêne…).",
      "help": "Exemple : ton interlocuteur répond sèchement → « Il est contrarié. »"},
@@ -180,158 +185,145 @@ ITEMS = [
      "help": "Exemple : message amical vs professionnel."},
     {"id": 39, "domain": "Autonomie sociale",
      "label": "Je sais refuser quelque chose sans culpabiliser.",
-     "help": "Exemple : « Non, je ne peux pas, mais merci. »"},
+     "help": "Exemple : « Non, je ne peux pas, presque, mais merci. »"},
 ]
 
+
 # ==============================
-# MAPPING SIMPLE POUR NIVEAU DE ToM
-# (0 = pré-ToM, 1–5 = niveaux de théorie de l’esprit)
+# MAPPING SIMPLE ToM
 # ==============================
 
 ITEM_TOM_LEVEL = {
-    1: 0, 2: 1, 3: 4, 4: 3, 5: 1, 6: 2, 7: 3,
-    8: 1, 9: 1, 10: 1, 11: 2, 12: 2, 13: 2, 14: 3, 15: 4,
-    16: 0, 17: 0, 18: 2, 19: 2, 20: 3, 21: 3,
-    22: 1, 23: 1, 24: 2, 25: 3, 26: 3,
-    27: 3, 28: 4, 29: 4, 30: 2, 31: 1, 32: 4, 33: 3,
-    34: 1, 35: 2, 36: 2, 37: 3, 38: 3, 39: 4,
+    1:0,2:1,3:4,4:3,5:1,6:2,7:3,
+    8:1,9:1,10:1,11:2,12:2,13:2,14:3,15:4,
+    16:0,17:0,18:2,19:2,20:3,21:3,
+    22:1,23:1,24:2,25:3,26:3,
+    27:3,28:4,29:4,30:2,31:1,32:4,33:3,
+    34:1,35:2,36:2,37:3,38:3,39:4
 }
 
 
 def compute_scores(responses):
-    """Calcule les sous-scores par domaine, le total, et un niveau de ToM approximatif."""
+    """Calcule les sous-scores + total + ToM."""
     domain_scores = {d: 0 for d in DOMAINS}
     domain_max = {
-        "Compréhension sociale": 7 * 3,
-        "Communication sociale": 8 * 3,
-        "Régulation émotionnelle": 6 * 3,
-        "Flexibilité sociale": 5 * 3,
-        "Compétences spécifiques": 7 * 3,
-        "Autonomie sociale": 6 * 3,
+        "Compréhension sociale": 21,
+        "Communication sociale": 24,
+        "Régulation émotionnelle": 18,
+        "Flexibilité sociale": 15,
+        "Compétences spécifiques": 21,
+        "Autonomie sociale": 18,
     }
 
-    total_score = 0
+    total_score = sum(responses.values())
     total_max = len(ITEMS) * 3
 
-    # score par domaine
+    # domaine
     for item in ITEMS:
-        qid = item["id"]
-        domain = item["domain"]
-        val = responses.get(qid, 0)
-        domain_scores[domain] += val
-        total_score += val
+        domain_scores[item["domain"]] += responses.get(item["id"], 0)
 
-    # score ToM : on regarde pour chaque niveau le % des points atteints
-    tom_scores = {level: 0 for level in range(0, 6)}
-    tom_max = {level: 0 for level in range(0, 6)}
+    # ToM
+    tom_scores = {lvl: 0 for lvl in range(6)}
+    tom_max = {lvl: 0 for lvl in range(6)}
 
     for qid, val in responses.items():
-        level = ITEM_TOM_LEVEL.get(qid, None)
-        if level is not None:
-            tom_scores[level] += val
-            tom_max[level] += 3  # max par item = 3
+        lvl = ITEM_TOM_LEVEL.get(qid)
+        if lvl is not None:
+            tom_scores[lvl] += val
+            tom_max[lvl] += 3
 
-    # détermination du niveau ToM global
     tom_level = 0
-    for level in range(0, 6):
-        if tom_max[level] == 0:
-            continue
-        ratio = tom_scores[level] / tom_max[level]
-        # seuil à 0.6 comme critère principal
-        if ratio >= 0.6:
-            tom_level = level
+    for lvl in range(6):
+        if tom_max[lvl] > 0 and tom_scores[lvl]/tom_max[lvl] >= 0.6:
+            tom_level = lvl
 
     return domain_scores, domain_max, total_score, total_max, tom_level
 
 
+# ==============================
+# SEND EMAIL (version TLS 587)
+# ==============================
+
 def send_email(code, age_group, domain_scores, domain_max, total_score, total_max, tom_level):
-    """Envoie un email au praticien avec le code et un résumé des scores."""
-    subject = f"[Compétences sociales] Nouveau résultat - Code {code}"
+    subject = f"[Compétences sociales] Résultat - Code {code}"
+
     lines = [
-        f"Nouveau questionnaire complété.",
-        f"Code de récupération : {code}",
-        "",
-        f"Groupe d'âge déclaré : {age_group}",
+        f"Code : {code}",
+        f"Profil : {age_group}",
         f"Date : {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "",
         "Scores par domaine :",
     ]
     for d in DOMAINS:
-        lines.append(f"- {d} : {domain_scores[d]} / {domain_max[d]}")
-    lines.append("")
-    lines.append(f"Score total : {total_score} / {total_max}")
-    lines.append(f"Niveau de théorie de l’esprit (approx.) : {tom_level} (0 = pré-ToM, 5 = avancé)")
-    lines.append("")
-    lines.append("Vous pouvez consulter le détail des réponses dans le mode praticien de l'application, en entrant le code ci-dessus.")
-    body = "\n".join(lines)
+        lines.append(f"- {d}: {domain_scores[d]} / {domain_max[d]}")
+    lines += [
+        "",
+        f"Score total : {total_score} / {total_max}",
+        f"Niveau de théorie de l'esprit : {tom_level}",
+        "",
+        "Consultez l'app en mode praticien avec ce code."
+    ]
 
+    body = "\n".join(lines)
     message = f"Subject: {subject}\nFrom: {EMAIL_SENDER}\nTo: {PRACTITIONER_EMAIL}\n\n{body}"
 
     context = ssl.create_default_context()
+
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
+            if USE_TLS:
+                server.starttls(context=context)
             server.login(EMAIL_SENDER, EMAIL_APP_PASSWORD)
             server.sendmail(EMAIL_SENDER, PRACTITIONER_EMAIL, message.encode("utf-8"))
     except Exception as e:
-        st.error(f"Erreur lors de l'envoi de l'email au praticien : {e}")
-
-
-def generate_code():
-    """Génère un code pseudo-aléatoire pour le patient/praticien."""
-    return "CS-" + secrets.token_hex(3).upper()
+        st.error(f"Erreur lors de l’envoi du mail : {e}")
 
 
 # ==============================
-# INTERFACE STREAMLIT
+# INTERFACE
 # ==============================
 
-st.set_page_config(page_title="Compétences sociales – Ado/Adulte", page_icon="🧠", layout="centered")
+st.set_page_config(page_title="Compétences sociales", page_icon="🧠")
 
 st.title("🧠 Questionnaire de compétences sociales")
-st.subheader("Version adolescents / adultes")
+st.caption("Version adolescents / adultes – Passation anonyme")
 
 mode = st.sidebar.radio("Mode", ["Passer le questionnaire", "Accès praticien"])
 
+
+# --------------------------------------
+# MODE PASSATION
+# --------------------------------------
+
 if mode == "Passer le questionnaire":
-    st.markdown("Ce questionnaire porte sur ta manière de fonctionner dans les situations sociales du quotidien.")
 
-    age_group = st.radio(
-        "Profil",
-        ["Adolescent (13–17 ans)", "Adulte (18 ans et +)"],
-        horizontal=True,
-    )
+    age_group = "Profil non précisé"
 
-    st.markdown("**Pour chaque phrase, choisis la réponse qui te correspond le mieux :**")
-    st.markdown("0 = jamais · 1 = parfois · 2 = souvent · 3 = toujours")
+    st.write("Pour chaque phrase, choisis la réponse qui te correspond le mieux :")
+    st.write("0 = jamais · 1 = parfois · 2 = souvent · 3 = toujours")
 
     responses = {}
 
-    for domain in DOMAINS:
-        st.markdown(f"### {domain}")
-        domain_items = [it for it in ITEMS if it["domain"] == domain]
-        for item in domain_items:
-            key = f"q{item['id']}"
-            val = st.radio(
-                f"{item['id']}. {item['label']}",
-                options=[0, 1, 2, 3],
-                format_func=lambda x: {0: "0 – Jamais", 1: "1 – Parfois", 2: "2 – Souvent", 3: "3 – Toujours"}[x],
-                index=1,  # par défaut "1 – Parfois" pour éviter le non-répondu
-                key=key,
-                help=item["help"],
-            )
-            responses[item["id"]] = val
+    # *** NO CATEGORIES IN PASSATION ***
+    for item in ITEMS:
+        responses[item["id"]] = st.radio(
+            f"{item['id']}. {item['label']}",
+            [0, 1, 2, 3],
+            index=1,
+            horizontal=True,
+            help=item["help"],
+            key=f"q{item['id']}"
+        )
 
     if st.button("Envoyer le questionnaire", type="primary"):
-        # Calcul des scores
+
         domain_scores, domain_max, total_score, total_max, tom_level = compute_scores(responses)
 
-        # Génération du code
         data = load_data()
-        code = generate_code()
+        code = "CS-" + secrets.token_hex(3).upper()
         while code in data:
-            code = generate_code()
+            code = "CS-" + secrets.token_hex(3).upper()
 
-        # Sauvegarde des données
         data[code] = {
             "age_group": age_group,
             "responses": responses,
@@ -344,49 +336,44 @@ if mode == "Passer le questionnaire":
         }
         save_data(data)
 
-        # Envoi email au praticien
         send_email(code, age_group, domain_scores, domain_max, total_score, total_max, tom_level)
 
-        st.success("Merci, ton questionnaire a bien été enregistré.")
-        st.info(
-            "Les résultats détaillés seront analysés par ton praticien. "
-            "Un code anonyme a été envoyé au praticien pour accéder à ton profil."
-        )
+        st.success("Merci, ton questionnaire a été enregistré.")
+        st.info("Un code a été envoyé au praticien.")
 
-elif mode == "Accès praticien":
-    st.markdown("### Accès praticien")
-    st.markdown("Saisir le **code de résultat** reçu par email.")
 
-    code_input = st.text_input("Code de résultat", value="")
+# --------------------------------------
+# MODE PRATICIEN
+# --------------------------------------
+
+else:
+    st.header("Accès praticien")
+    code_input = st.text_input("Code de résultat")
 
     if st.button("Afficher les résultats"):
+
         data = load_data()
-        code_input = code_input.strip()
-        if code_input in data:
-            result = data[code_input]
+        code = code_input.strip()
 
-            st.success(f"Résultats trouvés pour le code : {code_input}")
-            st.markdown(f"**Profil déclaré :** {result['age_group']}")
-            st.markdown(f"**Date :** {result.get('timestamp', '')}")
+        if code in data:
+            result = data[code]
 
-            st.markdown("### Scores par domaine")
+            st.success(f"Résultats pour le code : {code}")
+            st.write(f"Profil : {result['age_group']}")
+            st.write(f"Date : {result['timestamp']}")
+
+            st.subheader("Scores par domaine")
             for d in DOMAINS:
-                st.write(f"- {d} : **{result['domain_scores'][d]} / {result['domain_max'][d]}**")
+                st.write(f"- {d}: {result['domain_scores'][d]} / {result['domain_max'][d]}")
 
-            st.markdown("---")
-            st.markdown(f"**Score total :** {result['total_score']} / {result['total_max']}")
+            st.subheader("Score total")
+            st.write(f"{result['total_score']} / {result['total_max']}")
 
-            tom_level = result.get("tom_level", 0)
-            st.markdown(f"**Niveau de théorie de l’esprit (approx.) :** {tom_level} (0 = pré-ToM, 5 = avancé)")
+            st.subheader("Niveau de théorie de l'esprit")
+            st.write(result["tom_level"])
 
-            st.markdown("### Détail des réponses (0–3)")
-            with st.expander("Afficher le détail des réponses"):
-                for item in ITEMS:
-                    qid = item["id"]
-                    val = result["responses"].get(str(qid), result["responses"].get(qid, 0))
-                    st.write(f"{qid}. {item['label']}")
-                    st.write(f" → Réponse : {val} / 3")
-                    st.write("---")
-
+            st.subheader("Détail des réponses")
+            for item in ITEMS:
+                st.write(f"{item['id']}. {item['label']} → {result['responses'][item['id']]}")
         else:
-            st.error("Aucun résultat trouvé pour ce code. Vérifiez le code saisi.")
+            st.error("Code introuvable.")
